@@ -1,0 +1,159 @@
+
+### **Considerations for Including Previous Prices in the Training DataFrame**
+When training a **CNH fair value model**, deciding whether to include **historical price data** (past FX rates) depends on the model type, objectives, and how the market processes information.
+
+---
+
+### **1. When to Include Previous Prices**
+✅ **For Time Series Models (LSTM, ARIMA, VAR)**
+- **Momentum & Trend Effects**: CNH movements often show **short-term momentum** and mean reversion patterns.
+- **Autoregressive Behavior**: FX rates **depend on previous values**, so lag features can help.
+- **Seasonality & Cycles**: Trade patterns, capital flows, and fixing mechanisms introduce **seasonal effects**.
+
+🔹 **Implementation**:  
+- Add **lagged prices** (e.g., `Lag_1`, `Lag_3`, `Lag_5`, `Lag_10`).
+- Use **rolling averages (SMA, EMA)**.
+- Compute **momentum indicators** like **RSI, MACD, Bollinger Bands**.
+
+```python
+df_cnh["Lag_1"] = df_cnh["FX_Rate"].shift(1)
+df_cnh["Lag_3"] = df_cnh["FX_Rate"].shift(3)
+df_cnh["Rolling_Mean"] = df_cnh["FX_Rate"].rolling(window=5).mean()
+```
+
+---
+
+### **2. When to Exclude Previous Prices**
+❌ **For Macroeconomic-Driven Models (Random Forest, XGBoost)**
+- **Lag features may introduce bias** when fundamental data shifts (e.g., sudden policy changes).
+- **Model needs independent explanatory variables** (e.g., GDP, interest rates, capital flows).
+- **Overfitting Risk**: If market regimes change (PBoC intervention, trade tensions), past prices **may not generalize well**.
+
+🔹 **Alternative Approach**:
+- Use **macroeconomic & liquidity indicators** as primary features.
+- Capture **trend effects** with **moving averages** instead of direct lags.
+
+---
+
+### **3. Hybrid Approach**
+🔄 **Best of Both Worlds**:  
+- **Use lagged FX prices in LSTM/ARIMA**, but exclude them from **Random Forest/XGBoost**.
+- Combine **macro data + price momentum features** to enhance predictions.
+
+🔹 **Final Features Setup**:
+| Model | Macro Features | Lagged Prices | Technical Indicators |
+|-------|--------------|--------------|----------------|
+| **Random Forest** | ✅ | ❌ | ✅ (Momentum, RSI) |
+| **LSTM** | ✅ | ✅ | ✅ (SMA, MACD) |
+| **ARIMA** | ❌ | ✅ | ❌ |
+
+---
+
+### **Next Steps**
+Would you like me to **add lagged prices & technical indicators** to the **LSTM/ARIMA models**, while keeping **Random Forest macro-driven**? 🚀
+
+
+
+
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+import talib
+from sklearn.ensemble import RandomForestRegressor
+from statsmodels.tsa.arima.model import ARIMA
+import requests
+
+# Generate synthetic macroeconomic data for CNH valuation
+np.random.seed(42)
+num_samples = 50
+window_size = 30  # 30-day rolling window
+
+# Define features
+data = {
+    "GDP": np.random.uniform(8, 16, num_samples),  # Trillion USD (China GDP)
+    "Inflation": np.random.uniform(0.5, 4.5, num_samples),  # % annual inflation
+    "Interest_Rate": np.random.uniform(1.5, 4.5, num_samples),  # % PBoC benchmark interest rate
+    "US_Interest_Rate": np.random.uniform(2.0, 5.5, num_samples),  # % US Fed Funds Rate
+    "Trade_Balance": np.random.uniform(100, 600, num_samples),  # Billion USD surplus
+    "Money_Supply": np.random.uniform(150, 250, num_samples),  # Trillion CNY
+    "PBoC_FX_Reserves": np.random.uniform(3.0, 3.5, num_samples),  # Trillion USD
+    "CNH_HIBOR": np.random.uniform(1.0, 5.0, num_samples),  # Offshore CNH HIBOR rates
+    "Capital_Flows": np.random.uniform(-100, 100, num_samples),  # Estimated net capital flows in billion USD
+    "CNY_Fixing": np.random.uniform(6.2, 7.4, num_samples),  # Daily PBoC CNY fixing rate
+    "CNY_Basket_Index": np.random.uniform(95, 105, num_samples),  # CFETS RMB Basket Index
+    "USD_Index": np.random.uniform(90, 105, num_samples),  # USD strength index (DXY)
+    "China_Exports": np.random.uniform(150, 500, num_samples),  # Monthly export values in billion USD
+    "China_Imports": np.random.uniform(100, 400, num_samples),  # Monthly import values in billion USD
+    "FX_Rate": np.random.uniform(6.3, 7.5, num_samples)  # USD/CNH exchange rate
+}
+
+# Create DataFrame
+df_cnh = pd.DataFrame(data)
+
+# Compute US-China Interest Rate Differential
+df_cnh["Interest_Rate_Differential"] = df_cnh["US_Interest_Rate"] - df_cnh["Interest_Rate"]
+
+# Compute Trade Balance Impact
+df_cnh["Net_Trade_Balance"] = df_cnh["China_Exports"] - df_cnh["China_Imports"]
+
+# Add lagged prices for LSTM & ARIMA models
+df_cnh["Lag_1"] = df_cnh["FX_Rate"].shift(1)
+df_cnh["Lag_3"] = df_cnh["FX_Rate"].shift(3)
+df_cnh["Lag_5"] = df_cnh["FX_Rate"].shift(5)
+df_cnh["Rolling_Mean"] = df_cnh["FX_Rate"].rolling(window=5).mean()
+df_cnh.dropna(inplace=True)  # Drop NaN values caused by shifting
+
+# Convert dataset into 3D array with 30-day rolling windows
+def create_sequences(df, window_size):
+    X, y = [], []
+    for i in range(len(df) - window_size):
+        X.append(df.iloc[i:i+window_size].values)
+        y.append(df.iloc[i+window_size]["FX_Rate"])
+    return np.array(X), np.array(y)
+
+# Define features and target variable
+features = ["GDP", "Inflation", "Interest_Rate", "US_Interest_Rate", "Interest_Rate_Differential", "Trade_Balance", "Net_Trade_Balance", "Money_Supply", "PBoC_FX_Reserves", "CNH_HIBOR", "Capital_Flows", "CNY_Fixing", "CNY_Basket_Index", "USD_Index", "Lag_1", "Lag_3", "Lag_5", "Rolling_Mean"]
+
+df_cnh_features = df_cnh[features]
+X, y = create_sequences(df_cnh_features, window_size)
+
+# Split data into train and test sets
+split_index = int(0.8 * len(X))
+X_train, X_test = X[:split_index], X[split_index:]
+y_train, y_test = y[:split_index], y[split_index:]
+
+# Train a Random Forest model with macroeconomic features only
+rf_features = [f for f in features if "Lag" not in f and "Rolling_Mean" not in f]  # Exclude lagged prices
+X_train_rf = df_cnh[rf_features][:split_index]
+X_test_rf = df_cnh[rf_features][split_index:]
+rf_model = RandomForestRegressor(n_estimators=100, random_state=42)
+rf_model.fit(X_train_rf, y_train)
+
+# Predict fair value of CNH using Random Forest
+y_pred_rf = rf_model.predict(X_test_rf)
+
+# Train an LSTM model with lagged prices included
+lstm_model = Sequential([
+    LSTM(50, activation='relu', return_sequences=True, input_shape=(window_size, len(features))),
+    Dropout(0.2),
+    LSTM(50, activation='relu', return_sequences=False),
+    Dropout(0.2),
+    Dense(25, activation='relu'),
+    Dense(1)
+])
+
+# Compile and train LSTM model
+lstm_model.compile(optimizer='adam', loss='mse')
+lstm_model.fit(X_train, y_train, epochs=100, batch_size=8, validation_data=(X_test, y_test), verbose=1)
+
+# Predict fair value of CNH using LSTM
+y_pred_lstm = lstm_model.predict(X_test)
+
+# Display results
+import ace_tools as tools
+tools.display_dataframe_to_user(name="Trade Signals for USD/CNH", dataframe=df_cnh)
